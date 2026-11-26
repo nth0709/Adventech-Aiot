@@ -3,14 +3,24 @@
 import cv2
 import numpy as np
 
+FLAT = False      # arc mode (see line_detect.FLAT)
+
 
 def sheet_region(frame, grow=12):
     """uint8 mask (full res) of the largest bright, unsaturated area, hull-filled; None if absent."""
     small = cv2.resize(frame, None, fx=0.25, fy=0.25, interpolation=cv2.INTER_AREA)
     hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
     v, s = hsv[..., 2], hsv[..., 1]
-    bright = float(np.percentile(v, 97))
-    white = ((v > 0.72 * bright) & (s < 50)).astype(np.uint8) * 255
+    if FLAT:
+        # arc mode: the glow is the brightest, bluish thing in view. Take the paper level from
+        # outside the glow, and count the glow itself as paper (the torch is on the sheet).
+        vb = cv2.GaussianBlur(v.astype(np.float32), (0, 0), 6)
+        glow = vb > 1.25 * float(np.median(vb))
+        bright = float(np.percentile(v[~glow], 97)) if np.any(~glow) else float(np.percentile(v, 97))
+        white = (((v > 0.72 * bright) & (s < 50)) | glow).astype(np.uint8) * 255
+    else:
+        bright = float(np.percentile(v, 97))
+        white = ((v > 0.72 * bright) & (s < 50)).astype(np.uint8) * 255
     white = cv2.morphologyEx(white, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
     n, lab, st, _ = cv2.connectedComponentsWithStats(white, 8)
     if n < 2:

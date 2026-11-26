@@ -45,6 +45,7 @@ import config as C
 from laser_spot import find_laser
 from marks import find_marks
 from sheet import sheet_region
+import arc_mode
 
 IDS = T.IDS
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -123,8 +124,15 @@ def line_at_laser(mask, laser):
             'dir': direction}
 
 
+def line_mask_now(frame):
+    return arc_mode.line_mask(frame) if arc_mode.ACTIVE else vision.line_mask(frame)
+
+
 def bridge_laser_gap(mask, laser, r=24, k=15):
-    """The bright laser dot breaks the dark line under it; close that gap locally only."""
+    """The bright laser dot breaks the dark line under it; close that gap locally only.
+    Arc on: the hidden disc under the arc is bridged from the line seen around it."""
+    if arc_mode.ACTIVE:
+        return arc_mode.bridge_hole(mask, laser)
     x, y = int(laser[0] * S), int(laser[1] * S)
     h, w = mask.shape
     x0, x1, y0, y1 = max(x - r, 0), min(x + r, w), max(y - r, 0), min(y + r, h)
@@ -435,7 +443,10 @@ class LaserTrack:
 
 
 def find_laser_near(frame, laser, half=60):
-    """Laser is ~fixed in the image (on the arm): search only a small window around it."""
+    """Laser is ~fixed in the image (on the arm): search only a small window around it.
+    Arc on: the red dot is invisible; the torch = the arc core seen in this frame."""
+    if arc_mode.ACTIVE:
+        return arc_mode.find_torch_near(frame, laser, half)
     x0 = int(max(laser[0] - half, 0)); y0 = int(max(laser[1] - half, 0))
     crop = frame[y0:y0 + 2 * half, x0:x0 + 2 * half]
     p, sc = find_laser(crop)
@@ -613,6 +624,8 @@ def main():
     ap.add_argument('--snap', default=None)
     ap.add_argument('--log', default=None)
     ap.add_argument('--record', default=None)
+    ap.add_argument('--arc', default=None, choices=['weak', 'medium', 'strong'],
+                    help='synthetic welding arc light while travelling (arc_filter / arc_mode)')
     args = ap.parse_args()
 
     bus = T.ServoBus(ids=IDS).connect()
@@ -638,6 +651,10 @@ def main():
         raise SystemExit('no observe pose yet: run  python3 follow5.py --teach')
 
     cam = vision.Camera()
+    arc = None
+    if args.arc:
+        cam = arc = arc_mode.ArcCamera(cam, args.arc)
+        print(f'arc mode: {args.arc} (arc struck at the start mark, out at the end mark)', flush=True)
     gui = bool(os.environ.get('DISPLAY'))
     log = csv.writer(open(args.log, 'w', newline='')) if args.log else None
     writer = None
@@ -693,12 +710,15 @@ def main():
         lt = LaserTrack(laser)
         t0, t_done, seq, n, last_snap, last_load = time.time(), None, None, 0, 0.0, time.time()
         while time.time() - t0 < args.timeout:
+            if arc is not None:                           # arc struck at START, out at the END
+                arc.on = phase == 'TRAVEL'
+                arc_mode.set_active(arc.on)
             seq, frame = cam.read(newer_than=seq)
             region = sheet_region(frame)                  # only look ON the paper
             if phase == 'ARRIVED':
                 lt.bad = 0                     # after arrival the dot may sit on the red ink
             laser = lt.update(frame)           # observed NOW (or last observed, within COAST_PX)
-            mask = bridge_laser_gap(vision.line_mask(frame), laser)
+            mask = bridge_laser_gap(line_mask_now(frame), laser)
             if region is None:
                 blue = red = None
             else:                                         # marks ON the line only, observed NOW
@@ -753,7 +773,8 @@ def main():
             elif phase == 'TRAVEL':
                 # direction comes from continuity along the line (corners included), not from
                 # where the red mark is: on a zig-zag the red mark is often "behind" the path
-                if red is not None and np.linalg.norm(red - laser) < RED_NEAR_PX:
+                red_near_px = RED_NEAR_PX + (arc_mode.hole_radius() if arc_mode.ACTIVE else 0)
+                if red is not None and np.linalg.norm(red - laser) < red_near_px:
                     red_near_t = time.time()                 # red really seen close by, this frame
                 if red is not None and np.linalg.norm(red - laser) < 20:
                     phase, t_done = 'ARRIVED', time.time()
@@ -882,6 +903,9 @@ def main():
     except RuntimeError as e:
         result = f'STOP: {e}'
     finally:
+        if arc is not None:
+            arc.on = False
+            arc_mode.set_active(False)
         print('result:', result, flush=True)
         try:
             T.goal(bus, read_q(bus))              # freeze where it is

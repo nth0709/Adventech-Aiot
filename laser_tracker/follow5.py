@@ -443,6 +443,10 @@ def find_laser_near(frame, laser, half=60):
 
 
 LINE_MIN_PX = 150             # line-mask pixels (half res) that count as "the line is in view"
+# arrival: the line ends under the laser and the red end dot was REALLY seen this close, this
+# recently (it is small on a far sheet and the laser glare hides it in the last few px)
+RED_NEAR_PX = 100
+RED_NEAR_S = 1.2
 HEAD_ID = 4                    # wrist pitch: "raise the head" to see further along the table
 
 
@@ -749,7 +753,7 @@ def main():
             elif phase == 'TRAVEL':
                 # direction comes from continuity along the line (corners included), not from
                 # where the red mark is: on a zig-zag the red mark is often "behind" the path
-                if red is not None and np.linalg.norm(red - laser) < 60:
+                if red is not None and np.linalg.norm(red - laser) < RED_NEAR_PX:
                     red_near_t = time.time()                 # red really seen close by, this frame
                 if red is not None and np.linalg.norm(red - laser) < 20:
                     phase, t_done = 'ARRIVED', time.time()
@@ -780,7 +784,7 @@ def main():
                         prev_dir = h / max(np.linalg.norm(h), 1e-6)
                     elif red is not None and np.linalg.norm(red - laser) < 80:
                         target, note = red, 'final approach to red'
-                    elif time.time() - red_near_t < 0.7:
+                    elif time.time() - red_near_t < RED_NEAR_S:
                         # line ends under the laser and the small red dot was seen right here
                         # a moment ago (now hidden by the laser glare): this is the end
                         phase, t_done = 'ARRIVED', time.time()

@@ -474,8 +474,11 @@ def verify_laser(bus, cam, q, known, tol=150, jog=60):
     scene, conf = T.shift(f0, f1, p0)
     print(f'laser check: dot moved {moved:.1f}px while the view moved {np.linalg.norm(scene):.0f}px '
           f'(conf {conf:.2f})', flush=True)
-    if moved > 8:
-        raise RuntimeError(f'red dot moved {moved:.0f}px with the scene - not the laser')
+    # the laser shifts a little with table height/tilt (parallax); scene-fixed red ink moves
+    # about as much as the view does. Reject only what follows the scene.
+    lim = max(8.0, 0.3 * float(np.linalg.norm(scene))) if conf >= 0.25 else 8.0
+    if moved > lim:
+        raise RuntimeError(f'red dot moved {moved:.0f}px with the scene (limit {lim:.0f}px) - not the laser')
     if conf >= 0.25 and np.linalg.norm(scene) < 15:
         raise RuntimeError('view did not move during the laser check - cannot confirm the laser')
     return (p0 + p1) / 2
@@ -758,6 +761,9 @@ def main():
                                                 away_from=away)
                     note = f'line dist {line["dist"]:.0f}px'
                     end_frames = end_frames + 1 if at_end else 0
+                    if at_end and os.environ.get('FOLLOW_DUMP'):     # debug: raw frame at a line end
+                        np.savez(f"{os.environ['FOLLOW_DUMP']}_{n}.npz", frame=frame, laser=laser,
+                                 closest=line['closest_h'], prev_dir=np.array([np.nan, np.nan]) if prev_dir is None else prev_dir)
                     if not at_end:
                         target = tgt
                         if prev_dir is not None:

@@ -12,6 +12,7 @@ import config as C
 KERNEL = 21          # px at processed scale; must be wider than the line
 BG_FRAC = 0.75       # local background must be >= this * bright level of frame
 MIN_CONTRAST = 18    # minimum black-hat response (grey levels)
+WEAK_FRAC = 0.5      # hysteresis: faint pixels connected to the line count down to this * threshold
 
 
 def line_mask(frame):
@@ -32,7 +33,15 @@ def line_mask(frame):
     bright_px = ((gray >= BG_FRAC * bright) & ~thin).astype(np.float32)
     other = (~thin).astype(np.float32)
     around = cv2.blur(bright_px, (KERNEL, KERNEL)) / np.maximum(cv2.blur(other, (KERNEL, KERNEL)), 1e-3)
-    mask = ((bh > thr) & sheet & (around > 0.7)).astype(np.uint8) * 255
+    ok = sheet & (around > 0.7)
+    strong = (bh > thr) & ok
+    # hysteresis: faint ink (>= WEAK_FRAC of the strong threshold) is kept only where it is
+    # connected to strong line pixels. A line seen at a grazing angle gets thin where it runs
+    # across the view (e.g. the top of an S curve) and loses contrast at half resolution.
+    weak = (bh > max(MIN_CONTRAST, WEAK_FRAC * thr)) & ok
+    n, lab = cv2.connectedComponents(weak.astype(np.uint8), connectivity=8)
+    keep = np.zeros(n, bool); keep[np.unique(lab[strong])] = True; keep[0] = False
+    mask = keep[lab].astype(np.uint8) * 255
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
     m = C.ROI_MARGIN
     if m > 0:
